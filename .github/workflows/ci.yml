@@ -43,7 +43,7 @@ jobs:
         image: mysql:8.4
         env:
           MYSQL_ROOT_PASSWORD: ci-root-password
-          MYSQL_DATABASE: incident_assistant_test
+          MYSQL_DATABASE: incident_assistant_ci_test
           MYSQL_USER: test_user
           MYSQL_PASSWORD: test_password
         ports:
@@ -55,7 +55,9 @@ jobs:
           --health-retries=10
 
     env:
-      DATABASE_URL: mysql+pymysql://test_user:test_password@127.0.0.1:3306/incident_assistant_test
+      DATABASE_URL: mysql+pymysql://test_user:test_password@127.0.0.1:3306/incident_assistant_ci_test
+      MYSQL_INTEGRATION_TEST_DATABASE: incident_assistant_ci_test
+      MYSQL_INTEGRATION_TESTS_ALLOW_DESTRUCTIVE: "1"
 
     steps:
       - name: Checkout repository

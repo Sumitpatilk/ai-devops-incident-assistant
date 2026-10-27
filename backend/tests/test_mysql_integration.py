@@ -32,17 +32,24 @@ def test_mysql_incident_and_authentication_flow():
         raise RuntimeError("DATABASE_URL is required for MySQL integration tests.")
 
     parsed_url = make_url(database_url)
-    allowed_database = os.getenv(
-        "MYSQL_INTEGRATION_TEST_DATABASE",
-        "incident_assistant_test",
+    allowed_database = os.getenv("MYSQL_INTEGRATION_TEST_DATABASE", "")
+    destructive_opt_in = os.getenv(
+        "MYSQL_INTEGRATION_TESTS_ALLOW_DESTRUCTIVE"
     )
+
+    disposable_databases = {
+        "incident_assistant_ci_test",
+    }
+
     if (
-        parsed_url.get_backend_name() != "mysql"
+        destructive_opt_in != "1"
+        or parsed_url.get_backend_name() != "mysql"
+        or parsed_url.database not in disposable_databases
         or parsed_url.database != allowed_database
     ):
         raise RuntimeError(
-            "Safety check failed: tests require the dedicated "
-            "incident_assistant_test MySQL database."
+            "Safety check failed: explicitly enable destructive tests "
+            "and select an approved disposable MySQL test database."
         )
 
     assert get_engine().dialect.name == "mysql"

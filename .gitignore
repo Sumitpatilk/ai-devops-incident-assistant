@@ -44,3 +44,6 @@ Thumbs.db
 
 # Temporary frontend source backups
 frontend/src/App.tsx.backup*
+
+# Temporary pre-change snapshots
+*.pre-*
