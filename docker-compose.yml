@@ -2,13 +2,14 @@ services:
   backend:
     build:
       context: ./backend
+      args:
+        APP_UID: "1000"
+        APP_GID: "1000"
     container_name: incident-assistant-backend
     environment:
       INCIDENT_DB_PATH: /app/data/incident_memory.db
     volumes:
-      - ./data:/app/data
-    ports:
-      - "8000:8000"
+      - incident-assistant-db-data:/app/data
     restart: unless-stopped
     healthcheck:
       test:
@@ -26,8 +27,12 @@ services:
       context: ./frontend
     container_name: incident-assistant-frontend
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:8080"
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  incident-assistant-db-data:
+    external: true

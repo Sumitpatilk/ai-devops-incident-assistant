@@ -24,17 +24,56 @@ const secondary =
   'rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-  })
+  let response: Response
+
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers ?? {}),
+      },
+    })
+  } catch {
+    throw new Error(
+      'Cannot reach the backend. Check that the API server is running and try again.',
+    )
+  }
 
   if (!response.ok) {
-    const message = await response.text()
-    throw new Error(message || `Request failed (${response.status})`)
+    const body = await response.text()
+    let message = `Request failed (${response.status})`
+
+    if (body) {
+      try {
+        const payload: unknown = JSON.parse(body)
+
+        if (typeof payload === 'string') {
+          message = payload
+        } else if (payload && typeof payload === 'object') {
+          const errorPayload = payload as {
+            detail?: unknown
+            message?: unknown
+            error?: unknown
+          }
+          const detail =
+            errorPayload.detail ?? errorPayload.message ?? errorPayload.error
+
+          message =
+            typeof detail === 'string'
+              ? detail
+              : detail !== undefined
+                ? JSON.stringify(detail)
+                : body
+        } else {
+          message = body
+        }
+      } catch {
+        message = body
+      }
+    }
+
+    throw new Error(message)
   }
 
   return response.json() as Promise<T>
@@ -99,23 +138,29 @@ export default function App() {
   const [verificationNotes, setVerificationNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [openingIncidentId, setOpeningIncidentId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [savingVerification, setSavingVerification] = useState(false)
   const [backendOnline, setBackendOnline] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true)
-    try {
-      const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
-      setIncidents(normalizeIncidents(data))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load incident history')
-    } finally {
-      setHistoryLoading(false)
-    }
-  }, [])
+  const loadHistory = useCallback(
+    async (showLoading = true): Promise<boolean> => {
+      if (showLoading) setHistoryLoading(true)
+      try {
+        const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
+        setIncidents(normalizeIncidents(data))
+        return true
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not load incident history')
+        return false
+      } finally {
+        if (showLoading) setHistoryLoading(false)
+      }
+    },
+    [],
+  )
 
   const checkHealth = useCallback(async () => {
     try {
@@ -127,9 +172,38 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void checkHealth()
-    void loadHistory()
-  }, [checkHealth, loadHistory])
+    let cancelled = false
+
+    async function initializeDashboard() {
+      try {
+        await api('/health')
+        if (!cancelled) setBackendOnline(true)
+      } catch {
+        if (!cancelled) setBackendOnline(false)
+      }
+
+      try {
+        const data = await api<unknown>(
+          '/api/v1/incidents?limit=50&offset=0',
+        )
+        if (!cancelled) setIncidents(normalizeIncidents(data))
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Could not load incident history',
+          )
+        }
+      }
+    }
+
+    void initializeDashboard()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function analyzeLogs() {
     setError('')
@@ -188,8 +262,12 @@ export default function App() {
   }
 
   async function openIncident(id: number) {
+    if (openingIncidentId !== null) return
+
     setError('')
     setNotice('')
+    setOpeningIncidentId(id)
+
     try {
       const detail = await api<Incident>(`/api/v1/incidents/${id}`)
       setSelected(detail)
@@ -201,6 +279,8 @@ export default function App() {
       setAnalysis(detail.analysis_json)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open incident')
+    } finally {
+      setOpeningIncidentId(null)
     }
   }
 
@@ -240,8 +320,17 @@ export default function App() {
       setFixDescription(updated.fix_description || '')
       setVerificationStatus(updated.verification_status || verificationStatus)
       setVerificationNotes(updated.verification_notes || verificationNotes)
-      setNotice(`Remediation notes and verification updated for incident #${selected.id}.`)
-      await loadHistory()
+      const historyRefreshed = await loadHistory()
+
+      if (historyRefreshed) {
+        setNotice(
+          `Remediation notes and verification updated for incident #${selected.id}.`
+        )
+      } else {
+        setNotice(
+          `Verification updated for incident #${selected.id}, but incident history could not refresh.`
+        )
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update incident')
     } finally {
@@ -270,8 +359,16 @@ export default function App() {
             <span className="text-slate-300">
               API {backendOnline ? 'Connected' : 'Offline'}
             </span>
-            <button onClick={() => { void checkHealth(); void loadHistory() }} className="ml-1 text-cyan-300 hover:text-cyan-200">
-              Refresh
+            <button
+              onClick={() => {
+                void checkHealth()
+                void loadHistory()
+              }}
+              disabled={historyLoading}
+              aria-label="Refresh backend status and incident history"
+              className="ml-1 text-cyan-300 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {historyLoading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
         </div>
@@ -400,14 +497,20 @@ export default function App() {
                   <button
                     key={incident.id}
                     onClick={() => void openIncident(incident.id)}
-                    className={`w-full rounded-lg border p-3 text-left transition ${
+                    disabled={openingIncidentId !== null}
+                    aria-label={`Open incident ${incident.id}`}
+                    className={`w-full rounded-lg border p-3 text-left transition disabled:cursor-wait disabled:opacity-60 ${
                       selected?.id === incident.id
                         ? 'border-cyan-500/50 bg-cyan-500/5'
                         : 'border-slate-800 bg-slate-950/60 hover:border-slate-600'
                     }`}
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold">Incident #{incident.id}</span>
+                      <span className="text-sm font-semibold">
+                        {openingIncidentId === incident.id
+                          ? `Opening incident #${incident.id}…`
+                          : `Incident #${incident.id}`}
+                      </span>
                       <StatusPill status={incident.verification_status} />
                     </div>
                     <div className="flex items-center justify-between gap-2 text-xs text-slate-400">

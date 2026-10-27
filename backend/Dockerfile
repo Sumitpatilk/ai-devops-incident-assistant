@@ -11,7 +11,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-RUN mkdir -p /app/data
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+RUN groupadd --gid "${APP_GID}" app \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" \
+       --no-create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /app/data \
+    && chown app:app /app/data
+
+USER app
 
 EXPOSE 8000
 
