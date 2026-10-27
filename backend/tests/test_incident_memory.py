@@ -1,17 +1,4 @@
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-
-client = TestClient(app)
-
-
-def test_create_and_retrieve_incident(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "test_incidents.db"),
-    )
-
+def test_create_and_retrieve_incident(client):
     response = client.post(
         "/api/v1/incidents",
         json={
@@ -37,12 +24,7 @@ def test_create_and_retrieve_incident(tmp_path, monkeypatch):
     )
 
 
-def test_list_incidents(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "list_test.db"),
-    )
-
+def test_list_incidents(client):
     response = client.post(
         "/api/v1/incidents",
         json={
@@ -57,12 +39,7 @@ def test_list_incidents(tmp_path, monkeypatch):
     assert len(history.json()["items"]) == 1
 
 
-def test_update_verification(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "verification_test.db"),
-    )
-
+def test_update_verification(client):
     created = client.post(
         "/api/v1/incidents",
         json={
@@ -70,6 +47,7 @@ def test_update_verification(tmp_path, monkeypatch):
             "logs": "Container terminated: OOMKilled",
         },
     )
+    assert created.status_code == 201
     incident_id = created.json()["id"]
 
     response = client.post(
@@ -88,22 +66,12 @@ def test_update_verification(tmp_path, monkeypatch):
     assert response.json()["verified_at"] is not None
 
 
-def test_missing_incident_returns_404(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "missing_test.db"),
-    )
-
+def test_missing_incident_returns_404(client):
     response = client.get("/api/v1/incidents/99999")
     assert response.status_code == 404
 
 
-def test_update_fix_description(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "fix_description_test.db"),
-    )
-
+def test_update_fix_description(client):
     created = client.post(
         "/api/v1/incidents",
         json={
@@ -118,7 +86,9 @@ def test_update_fix_description(tmp_path, monkeypatch):
     response = client.put(
         f"/api/v1/incidents/{incident_id}/fix",
         json={
-            "fix_description": "Updated memory limits and tested the workload",
+            "fix_description": (
+                "Updated memory limits and tested the workload"
+            ),
         },
     )
 
@@ -134,15 +104,9 @@ def test_update_fix_description(tmp_path, monkeypatch):
     )
 
 
-def test_update_fix_description_missing_incident(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "INCIDENT_DB_PATH",
-        str(tmp_path / "missing_fix_test.db"),
-    )
-
+def test_update_fix_description_missing_incident(client):
     response = client.put(
         "/api/v1/incidents/99999/fix",
         json={"fix_description": "Some remediation notes"},
     )
-
     assert response.status_code == 404

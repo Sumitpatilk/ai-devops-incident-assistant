@@ -29,6 +29,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   try {
     response = await fetch(path, {
       ...options,
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         ...(options?.headers ?? {}),
@@ -38,6 +39,13 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(
       'Cannot reach the backend. Check that the API server is running and try again.',
     )
+  }
+
+  if (
+    response.status === 401 &&
+    (path.startsWith('/api/v1/incidents') || path === '/api/v1/analyze')
+  ) {
+    window.dispatchEvent(new Event('auth:expired'))
   }
 
   if (!response.ok) {
@@ -142,6 +150,11 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [savingVerification, setSavingVerification] = useState(false)
   const [backendOnline, setBackendOnline] = useState(false)
+  const [authenticatedUsername, setAuthenticatedUsername] = useState<string | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginLoading, setLoginLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -171,39 +184,117 @@ export default function App() {
     }
   }, [])
 
+  // AUTH FRONTEND PATCH: restore the session before loading private data.
   useEffect(() => {
     let cancelled = false
 
-    async function initializeDashboard() {
+    const handleExpiredSession = () => {
+      setAuthenticatedUsername(null)
+      setIncidents([])
+      setSelected(null)
+      setAuthChecked(true)
+      setError('Your session has expired. Please log in again.')
+    }
+
+    window.addEventListener('auth:expired', handleExpiredSession)
+
+    async function initializeApp() {
       try {
         await api('/health')
         if (!cancelled) setBackendOnline(true)
       } catch {
-        if (!cancelled) setBackendOnline(false)
+        if (!cancelled) {
+          setBackendOnline(false)
+          setError('Cannot reach the backend. Check that the application is running.')
+        }
+        if (!cancelled) setAuthChecked(true)
+        return
       }
 
       try {
-        const data = await api<unknown>(
-          '/api/v1/incidents?limit=50&offset=0',
+        const session = await api<{ authenticated: boolean; username: string }>(
+          '/api/v1/auth/me',
         )
+        if (cancelled) return
+
+        setAuthenticatedUsername(session.username)
+        const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
         if (!cancelled) setIncidents(normalizeIncidents(data))
       } catch (err) {
         if (!cancelled) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Could not load incident history',
-          )
+          setAuthenticatedUsername(null)
+          if (!(err instanceof Error && err.message.includes('Authentication required'))) {
+            setError(err instanceof Error ? err.message : 'Could not restore your session')
+          }
         }
+      } finally {
+        if (!cancelled) setAuthChecked(true)
       }
     }
 
-    void initializeDashboard()
+    void initializeApp()
 
     return () => {
       cancelled = true
+      window.removeEventListener('auth:expired', handleExpiredSession)
     }
   }, [])
+
+  // AUTH FRONTEND PATCH: establish and revoke server-side sessions.
+  async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    setLoginLoading(true)
+
+    try {
+      const session = await api<{ authenticated: boolean; username: string }>(
+        '/api/v1/auth/login',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            username: loginUsername.trim(),
+            password: loginPassword,
+          }),
+        },
+      )
+
+      setAuthenticatedUsername(session.username)
+      setLoginPassword('')
+      setAuthChecked(true)
+      setError('')
+      const loaded = await loadHistory(false)
+      if (!loaded) {
+        setNotice('Signed in successfully, but incident history could not be loaded.')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  async function handleLogout() {
+    setError('')
+    setNotice('')
+
+    try {
+      await api('/api/v1/auth/logout', { method: 'POST' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not log out cleanly')
+    } finally {
+      setAuthenticatedUsername(null)
+      setIncidents([])
+      setSelected(null)
+      setAnalysis(null)
+      setLogs('')
+      setFixDescription('')
+      setVerificationNotes('')
+      setVerificationStatus('not_run')
+      setLoginPassword('')
+      setAuthChecked(true)
+    }
+  }
 
   async function analyzeLogs() {
     setError('')
@@ -338,6 +429,107 @@ export default function App() {
     }
   }
 
+  if (!authChecked) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#080d18] px-5 text-slate-100">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-cyan-400" />
+          <p className="text-sm text-slate-400">Checking your session…</p>
+        </div>
+      </main>
+    )
+  }
+
+  if (!authenticatedUsername) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#080d18] px-5 py-10 text-slate-100">
+        <section className={`${panel} w-full max-w-md p-6 sm:p-8`}>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-cyan-400/30 bg-cyan-400/10 text-cyan-300">
+              <svg viewBox="0 0 24 24" fill="none" className="h-6 w-6" stroke="currentColor" strokeWidth="1.7">
+                <path d="M12 3 4.5 7v10L12 21l7.5-4V7L12 3Z" />
+                <path d="m8 12 2.5 2.5L16 9" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">OpsPilot</h1>
+              <p className="text-xs text-slate-400">AI DevOps Incident Assistant</p>
+            </div>
+          </div>
+
+          <h2 className="text-2xl font-bold">Welcome back</h2>
+          <p className="mt-2 mb-6 text-sm leading-6 text-slate-400">
+            Sign in to access your incident dashboard and saved incident history.
+          </p>
+
+          {error && (
+            <div role="alert" className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label htmlFor="login-username" className="mb-2 block text-sm font-medium text-slate-300">
+                Username
+              </label>
+              <input
+                id="login-username"
+                name="username"
+                autoComplete="username"
+                required
+                maxLength={64}
+                className={field}
+                value={loginUsername}
+                onChange={(event) => setLoginUsername(event.target.value)}
+                disabled={loginLoading}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="login-password" className="mb-2 block text-sm font-medium text-slate-300">
+                Password
+              </label>
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                maxLength={1024}
+                className={field}
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                disabled={loginLoading}
+              />
+            </div>
+
+            <button type="submit" className={`${primary} w-full`} disabled={loginLoading || !backendOnline}>
+              {loginLoading ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+
+          <div className="mt-5 flex items-center justify-between text-xs text-slate-500">
+            <span className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${backendOnline ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              API {backendOnline ? 'Connected' : 'Offline'}
+            </span>
+            <button
+              type="button"
+              className="text-cyan-300 hover:text-cyan-200"
+              onClick={() => {
+                setError('')
+                void checkHealth()
+              }}
+            >
+              Check connection
+            </button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-[#080d18] text-slate-100">
       <header className="border-b border-slate-800 bg-slate-950/80">
@@ -354,6 +546,17 @@ export default function App() {
               <p className="text-xs text-slate-400">AI DevOps Incident Assistant</p>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs text-slate-400">
+              Signed in as <strong className="text-slate-200">{authenticatedUsername}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className={secondary}
+            >
+              Log out
+            </button>
           <div className="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900 px-3 py-2 text-xs">
             <span className={`h-2 w-2 rounded-full ${backendOnline ? 'bg-emerald-400' : 'bg-rose-400'}`} />
             <span className="text-slate-300">
@@ -370,6 +573,7 @@ export default function App() {
             >
               {historyLoading ? 'Refreshing…' : 'Refresh'}
             </button>
+          </div>
           </div>
         </div>
       </header>
