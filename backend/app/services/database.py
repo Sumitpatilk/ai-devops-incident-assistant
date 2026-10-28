@@ -16,6 +16,8 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.engine import Connection, Engine
 
@@ -29,6 +31,12 @@ incidents = Table(
     "incidents",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        Integer,
+        ForeignKey("auth_users.id"),
+        nullable=True,
+    ),
     Column("source", String(255), nullable=False),
     Column("logs", Text, nullable=False),
     Column("analysis_json", Text, nullable=False),
@@ -72,6 +80,7 @@ auth_sessions = Table(
 )
 
 Index("idx_auth_sessions_expiry", auth_sessions.c.expires_at)
+Index("idx_incidents_user_id", incidents.c.user_id)
 
 
 def get_database_url() -> str:
@@ -111,3 +120,116 @@ def get_connection() -> Iterator[Connection]:
 def init_db() -> None:
     """Create missing tables without deleting existing data."""
     metadata.create_all(get_engine())
+
+
+def migrate_incident_ownership() -> None:
+    """Safely add incident ownership after checking legacy ownership ambiguity.
+
+    Run only after a verified backup and isolated-database testing.
+    This function is intentionally not called by init_db.
+    """
+    engine = get_engine()
+
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        tables = set(inspector.get_table_names())
+
+        if "incidents" not in tables:
+            raise RuntimeError("The incidents table does not exist.")
+        if "auth_users" not in tables:
+            raise RuntimeError("The auth_users table does not exist.")
+
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("incidents")
+        }
+
+        # Preflight before making schema changes.
+        if "user_id" not in columns:
+            unowned_count = connection.execute(
+                text("SELECT COUNT(*) FROM incidents")
+            ).scalar_one()
+        else:
+            unowned_count = connection.execute(
+                text("SELECT COUNT(*) FROM incidents WHERE user_id IS NULL")
+            ).scalar_one()
+
+        if unowned_count:
+            user_count = connection.execute(
+                text("SELECT COUNT(*) FROM auth_users")
+            ).scalar_one()
+
+            if user_count != 1:
+                raise RuntimeError(
+                    "Cannot safely assign legacy incidents: expected exactly "
+                    "one user when unowned incidents exist. No owner was guessed."
+                )
+
+        if "user_id" not in columns:
+            if connection.dialect.name == "sqlite":
+                connection.execute(text(
+                    "ALTER TABLE incidents "
+                    "ADD COLUMN user_id INTEGER REFERENCES auth_users(id)"
+                ))
+            elif connection.dialect.name == "mysql":
+                connection.execute(text(
+                    "ALTER TABLE incidents ADD COLUMN user_id INTEGER NULL"
+                ))
+            else:
+                raise RuntimeError(
+                    "Incident ownership migration supports SQLite and MySQL only."
+                )
+
+        inspector = inspect(connection)
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("incidents")
+        }
+        foreign_keys = inspector.get_foreign_keys("incidents")
+        has_owner_foreign_key = any(
+            fk.get("constrained_columns") == ["user_id"]
+            and fk.get("referred_table") == "auth_users"
+            and fk.get("referred_columns") == ["id"]
+            for fk in foreign_keys
+        )
+
+        if not has_owner_foreign_key:
+            if connection.dialect.name == "mysql":
+                connection.execute(text(
+                    "ALTER TABLE incidents "
+                    "ADD CONSTRAINT fk_incidents_user_id_auth_users "
+                    "FOREIGN KEY (user_id) REFERENCES auth_users(id)"
+                ))
+            elif connection.dialect.name == "sqlite":
+                raise RuntimeError(
+                    "SQLite incidents.user_id exists without the required "
+                    "foreign key. Use a separately tested table rebuild."
+                )
+            else:
+                raise RuntimeError(
+                    "Cannot create the incident owner foreign key on this database."
+                )
+
+        indexes = {
+            index["name"]
+            for index in inspect(connection).get_indexes("incidents")
+        }
+        if "idx_incidents_user_id" not in indexes:
+            connection.execute(text(
+                "CREATE INDEX idx_incidents_user_id ON incidents (user_id)"
+            ))
+
+        if unowned_count:
+            connection.execute(text(
+                "UPDATE incidents SET user_id = "
+                "(SELECT id FROM auth_users LIMIT 1) WHERE user_id IS NULL"
+            ))
+
+        remaining = connection.execute(text(
+            "SELECT COUNT(*) FROM incidents WHERE user_id IS NULL"
+        )).scalar_one()
+
+        if remaining:
+            raise RuntimeError(
+                "Incident ownership migration left unowned records."
+            )
