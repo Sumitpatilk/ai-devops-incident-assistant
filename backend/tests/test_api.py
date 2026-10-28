@@ -135,6 +135,25 @@ def test_login_cookie_security_attributes(unauthenticated_client):
     assert "path=/" in cookie
 
 
+def test_login_cookie_secure_when_https_mode_enabled(
+    unauthenticated_client, monkeypatch
+):
+    monkeypatch.setenv("AUTH_COOKIE_SECURE", "true")
+    create_user(TEST_USERNAME, TEST_PASSWORD)
+
+    response = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": TEST_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"].lower()
+    assert "secure" in [part.strip() for part in cookie.split(";")]
+
+
 def test_expired_session_is_rejected(unauthenticated_client, monkeypatch):
     import hashlib
     from sqlalchemy import text
