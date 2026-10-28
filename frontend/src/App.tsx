@@ -146,6 +146,8 @@ export default function App() {
   const [verificationNotes, setVerificationNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyPageLoading, setHistoryPageLoading] = useState(false)
+  const [historyHasMore, setHistoryHasMore] = useState(false)
   const [openingIncidentId, setOpeningIncidentId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [savingVerification, setSavingVerification] = useState(false)
@@ -163,7 +165,9 @@ export default function App() {
       if (showLoading) setHistoryLoading(true)
       try {
         const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
-        setIncidents(normalizeIncidents(data))
+        const items = normalizeIncidents(data)
+        setIncidents(items)
+        setHistoryHasMore(items.length === 50)
         return true
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not load incident history')
@@ -174,6 +178,30 @@ export default function App() {
     },
     [],
   )
+
+  const loadMoreHistory = useCallback(async () => {
+    if (historyPageLoading || historyLoading || !historyHasMore) return
+
+    setHistoryPageLoading(true)
+    setError('')
+    try {
+      const offset = incidents.length
+      const data = await api<unknown>(
+        `/api/v1/incidents?limit=50&offset=${offset}`,
+      )
+      const items = normalizeIncidents(data)
+
+      setIncidents((current) => {
+        const existingIds = new Set(current.map((incident) => incident.id))
+        return [...current, ...items.filter((incident) => !existingIds.has(incident.id))]
+      })
+      setHistoryHasMore(items.length === 50)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load more incidents')
+    } finally {
+      setHistoryPageLoading(false)
+    }
+  }, [historyHasMore, historyLoading, historyPageLoading, incidents.length])
 
   const checkHealth = useCallback(async () => {
     try {
@@ -191,6 +219,7 @@ export default function App() {
     const handleExpiredSession = () => {
       setAuthenticatedUsername(null)
       setIncidents([])
+      setHistoryHasMore(false)
       setSelected(null)
       setAuthChecked(true)
       setError('Your session has expired. Please log in again.')
@@ -219,7 +248,11 @@ export default function App() {
 
         setAuthenticatedUsername(session.username)
         const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
-        if (!cancelled) setIncidents(normalizeIncidents(data))
+        if (!cancelled) {
+          const items = normalizeIncidents(data)
+          setIncidents(items)
+          setHistoryHasMore(items.length === 50)
+        }
       } catch (err) {
         if (!cancelled) {
           setAuthenticatedUsername(null)
@@ -285,6 +318,7 @@ export default function App() {
     } finally {
       setAuthenticatedUsername(null)
       setIncidents([])
+      setHistoryHasMore(false)
       setSelected(null)
       setAnalysis(null)
       setLogs('')
@@ -727,7 +761,16 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <button className={`${secondary} mt-3 w-full`} onClick={() => void loadHistory()} disabled={historyLoading}>
+              {historyHasMore && (
+                <button
+                  className={`${secondary} mt-3 w-full`}
+                  onClick={() => void loadMoreHistory()}
+                  disabled={historyLoading || historyPageLoading}
+                >
+                  {historyPageLoading ? 'Loading more…' : 'Load more incidents'}
+                </button>
+              )}
+              <button className={`${secondary} mt-3 w-full`} onClick={() => void loadHistory()} disabled={historyLoading || historyPageLoading}>
                 {historyLoading ? 'Refreshing…' : 'Refresh history'}
               </button>
             </section>
