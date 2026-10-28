@@ -145,6 +145,31 @@ def get_session_user(token: str) -> str | None:
     return str(row["username"]) if row else None
 
 
+
+def get_session_user_id(token: str) -> int | None:
+    """Return the authenticated user's ID for a valid session token."""
+    if not token:
+        return None
+
+    init_auth_db()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_connection() as connection:
+        row = connection.execute(
+            text("""
+                SELECT s.user_id
+                FROM auth_sessions AS s
+                JOIN auth_users AS u ON u.id = s.user_id
+                WHERE s.token_hash = :token_hash
+                  AND s.expires_at > :now
+            """),
+            {"token_hash": token_hash, "now": now},
+        ).mappings().first()
+
+    return int(row["user_id"]) if row else None
+
+
 def delete_session(token: str) -> None:
     if not token:
         return

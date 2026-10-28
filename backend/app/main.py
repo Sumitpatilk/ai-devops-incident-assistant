@@ -20,6 +20,7 @@ from app.services.auth_store import (
     create_session,
     delete_session,
     get_session_user,
+    get_session_user_id,
 )
 from app.services.log_analyzer import analyze_log
 from app.services.incident_store import (
@@ -144,6 +145,21 @@ def require_user(
     return username
 
 
+def require_user_id(
+    request: Request,
+    token: str | None = Depends(cookie_scheme),
+) -> int:
+    validate_request_origin(request)
+
+    user_id = get_session_user_id(token or "")
+    if user_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in.",
+        )
+    return user_id
+
+
 @app.get("/health")
 def health_check():
     return {
@@ -214,7 +230,7 @@ def analyze(
 @app.post("/api/v1/incidents", status_code=201)
 def create_incident(
     payload: IncidentCreateRequest,
-    _username: str = Depends(require_user),
+    user_id: int = Depends(require_user_id),
 ):
     try:
         analysis = analyze_log(
@@ -228,6 +244,7 @@ def create_incident(
         source=payload.source.strip().lower(),
         logs=payload.logs,
         analysis=analysis,
+        user_id=user_id,
         fix_description=payload.fix_description,
     )
 
@@ -236,10 +253,10 @@ def create_incident(
 def get_incidents(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    _username: str = Depends(require_user),
+    user_id: int = Depends(require_user_id),
 ):
     return {
-        "items": list_incidents(limit=limit, offset=offset),
+        "items": list_incidents(user_id=user_id, limit=limit, offset=offset),
         "limit": limit,
         "offset": offset,
     }
@@ -248,9 +265,9 @@ def get_incidents(
 @app.get("/api/v1/incidents/{incident_id}")
 def get_incident_by_id(
     incident_id: int,
-    _username: str = Depends(require_user),
+    user_id: int = Depends(require_user_id),
 ):
-    incident = get_incident(incident_id)
+    incident = get_incident(incident_id, user_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -260,10 +277,11 @@ def get_incident_by_id(
 def verify_incident(
     incident_id: int,
     payload: VerificationRequest,
-    _username: str = Depends(require_user),
+    user_id: int = Depends(require_user_id),
 ):
     incident = update_verification(
         incident_id=incident_id,
+        user_id=user_id,
         status=payload.status,
         notes=payload.notes,
     )
@@ -276,10 +294,11 @@ def verify_incident(
 def update_incident_fix(
     incident_id: int,
     payload: FixDescriptionRequest,
-    _username: str = Depends(require_user),
+    user_id: int = Depends(require_user_id),
 ):
     incident = update_fix_description(
         incident_id=incident_id,
+        user_id=user_id,
         fix_description=payload.fix_description,
     )
     if incident is None:
