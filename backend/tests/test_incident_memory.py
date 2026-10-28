@@ -225,3 +225,21 @@ def test_list_incidents_rejects_invalid_pagination(client):
     for query in ("limit=0", "limit=101", "offset=-1"):
         response = client.get(f"/api/v1/incidents?{query}")
         assert response.status_code == 422, query
+
+
+def test_list_incidents_uses_default_pagination(client):
+    created = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "docker",
+            "logs": "Default pagination test incident",
+        },
+    )
+    assert created.status_code == 201
+    incident_id = created.json()["id"]
+
+    response = client.get("/api/v1/incidents")
+    assert response.status_code == 200
+    assert response.json()["limit"] == 20
+    assert response.json()["offset"] == 0
+    assert incident_id in [item["id"] for item in response.json()["items"]]
