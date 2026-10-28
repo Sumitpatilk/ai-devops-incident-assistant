@@ -72,26 +72,6 @@ def test_mysql_incident_and_authentication_flow():
             text("DELETE FROM incidents")
         )
 
-    incident = save_incident(
-        source="ci-mysql-test",
-        logs="Example test log",
-        analysis={"severity": "low", "summary": "MySQL integration test"},
-    )
-    incident_id = incident["id"]
-
-    assert get_incident(incident_id)["analysis"]["severity"] == "low"
-    assert any(
-        item["id"] == incident_id for item in list_incidents(limit=100)
-    )
-
-    updated = update_fix_description(incident_id, "CI test fix")
-    assert updated["fix_description"] == "CI test fix"
-
-    verified = update_verification(
-        incident_id, "passed", "MySQL integration test succeeded"
-    )
-    assert verified["verification_status"] == "passed"
-
     username = "mysql-ci-user"
     password = "mysql-ci-password-12345"
     create_user(username, password)
@@ -99,6 +79,30 @@ def test_mysql_incident_and_authentication_flow():
     user_id = authenticate_user(username, password)
     assert user_id is not None
     assert authenticate_user(username, "wrong-password") is None
+
+    incident = save_incident(
+        source="ci-mysql-test",
+        logs="Example test log",
+        analysis={"severity": "low", "summary": "MySQL integration test"},
+        user_id=user_id,
+    )
+    incident_id = incident["id"]
+
+    assert get_incident(incident_id, user_id)["analysis"]["severity"] == "low"
+    assert any(
+        item["id"] == incident_id
+        for item in list_incidents(user_id=user_id, limit=100)
+    )
+
+    updated = update_fix_description(
+        incident_id, user_id, "CI test fix"
+    )
+    assert updated["fix_description"] == "CI test fix"
+
+    verified = update_verification(
+        incident_id, user_id, "passed", "MySQL integration test succeeded"
+    )
+    assert verified["verification_status"] == "passed"
 
     token, _ = create_session(user_id)
     assert get_session_user(token) == username

@@ -110,3 +110,82 @@ def test_update_fix_description_missing_incident(client):
         json={"fix_description": "Some remediation notes"},
     )
     assert response.status_code == 404
+
+def test_users_cannot_access_each_others_incidents(
+    client, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    from app.services.auth_store import create_session, password_hasher
+    from app.services.database import get_connection
+
+    # The existing client is authenticated as user A.
+    created = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "kubernetes",
+            "logs": "User A private incident",
+            "fix_description": "Original fix",
+        },
+    )
+    assert created.status_code == 201
+    incident_id = created.json()["id"]
+
+    # Create user B only in this isolated test database.
+    with get_connection() as connection:
+        result = connection.execute(
+            text("""
+                INSERT INTO auth_users (username, password_hash, created_at)
+                VALUES (:username, :password_hash, :created_at)
+            """),
+            {
+                "username": "test-user-b",
+                "password_hash": password_hasher.hash(
+                    "test-user-b-password-12345"
+                ),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        user_b_id = result.lastrowid
+
+    token_b, _ = create_session(user_b_id)
+
+    # Use a separate HTTP client carrying user B's session.
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client_b:
+        client_b.cookies.set("incident_session", token_b, path="/")
+
+        history_b = client_b.get("/api/v1/incidents")
+        assert history_b.status_code == 200
+        assert all(
+            item["id"] != incident_id
+            for item in history_b.json()["items"]
+        )
+
+        detail_b = client_b.get(f"/api/v1/incidents/{incident_id}")
+        assert detail_b.status_code == 404
+
+        fix_b = client_b.put(
+            f"/api/v1/incidents/{incident_id}/fix",
+            json={"fix_description": "Unauthorized change"},
+        )
+        assert fix_b.status_code == 404
+
+        verification_b = client_b.post(
+            f"/api/v1/incidents/{incident_id}/verification",
+            json={
+                "status": "passed",
+                "notes": "Unauthorized verification",
+            },
+        )
+        assert verification_b.status_code == 404
+
+    # User A's incident must remain unchanged.
+    detail_a = client.get(f"/api/v1/incidents/{incident_id}")
+    assert detail_a.status_code == 200
+    assert detail_a.json()["fix_description"] == "Original fix"
+    assert detail_a.json()["verification_status"] == "not_run"
