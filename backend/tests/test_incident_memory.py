@@ -189,3 +189,39 @@ def test_users_cannot_access_each_others_incidents(
     assert detail_a.status_code == 200
     assert detail_a.json()["fix_description"] == "Original fix"
     assert detail_a.json()["verification_status"] == "not_run"
+
+
+def test_list_incidents_pagination_and_order(client):
+    incident_ids = []
+
+    for index in range(3):
+        response = client.post(
+            "/api/v1/incidents",
+            json={
+                "source": "docker",
+                "logs": f"Pagination test incident {index + 1}",
+            },
+        )
+        assert response.status_code == 201
+        incident_ids.append(response.json()["id"])
+
+    first_page = client.get("/api/v1/incidents?limit=2&offset=0")
+    assert first_page.status_code == 200
+    assert first_page.json()["limit"] == 2
+    assert first_page.json()["offset"] == 0
+    first_page_ids = [item["id"] for item in first_page.json()["items"]]
+    assert len(first_page_ids) == 2
+    assert first_page_ids == incident_ids[::-1][:2]
+
+    second_page = client.get("/api/v1/incidents?limit=2&offset=2")
+    assert second_page.status_code == 200
+    second_page_ids = [item["id"] for item in second_page.json()["items"]]
+    assert len(second_page_ids) == 1
+    assert second_page_ids == incident_ids[::-1][2:]
+    assert set(first_page_ids).isdisjoint(second_page_ids)
+
+
+def test_list_incidents_rejects_invalid_pagination(client):
+    for query in ("limit=0", "limit=101", "offset=-1"):
+        response = client.get(f"/api/v1/incidents?{query}")
+        assert response.status_code == 422, query
