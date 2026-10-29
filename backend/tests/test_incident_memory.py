@@ -65,6 +65,41 @@ def test_update_verification(client):
     )
     assert response.json()["verified_at"] is not None
 
+def test_reset_verification_clears_verified_at(client):
+    created = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "kubernetes",
+            "logs": "Container terminated: OOMKilled",
+        },
+    )
+    assert created.status_code == 201
+    incident_id = created.json()["id"]
+
+    passed = client.post(
+        f"/api/v1/incidents/{incident_id}/verification",
+        json={
+            "status": "passed",
+            "notes": "Regression tests passed",
+        },
+    )
+    assert passed.status_code == 200
+    assert passed.json()["verified_at"] is not None
+
+    reset = client.post(
+        f"/api/v1/incidents/{incident_id}/verification",
+        json={
+            "status": "not_run",
+            "notes": "Verification needs to be rerun",
+        },
+    )
+
+    assert reset.status_code == 200
+    assert reset.json()["verification_status"] == "not_run"
+    assert reset.json()["verification_notes"] == (
+        "Verification needs to be rerun"
+    )
+    assert reset.json()["verified_at"] is None
 
 def test_missing_incident_returns_404(client):
     response = client.get("/api/v1/incidents/99999")
@@ -243,3 +278,195 @@ def test_list_incidents_uses_default_pagination(client):
     assert response.json()["limit"] == 20
     assert response.json()["offset"] == 0
     assert incident_id in [item["id"] for item in response.json()["items"]]
+
+
+def test_list_incidents_searches_logs_and_source(client):
+    docker_incident = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "Unique container startup failure"},
+    )
+    github_incident = client.post(
+        "/api/v1/incidents",
+        json={"source": "github-actions", "logs": "Workflow dependency timeout"},
+    )
+    assert docker_incident.status_code == 201
+    assert github_incident.status_code == 201
+
+    by_logs = client.get("/api/v1/incidents?search=CONTAINER%20STARTUP")
+    assert by_logs.status_code == 200
+    assert [item["id"] for item in by_logs.json()["items"]] == [
+        docker_incident.json()["id"]
+    ]
+
+    by_source = client.get("/api/v1/incidents?search=GITHUB-ACTIONS")
+    assert by_source.status_code == 200
+    assert [item["id"] for item in by_source.json()["items"]] == [
+        github_incident.json()["id"]
+    ]
+
+
+def test_list_incidents_filters_by_verification_status(client):
+    failed = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "Filter test failed incident"},
+    )
+    passed = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "Filter test passed incident"},
+    )
+    assert failed.status_code == 201
+    assert passed.status_code == 201
+
+    failed_id = failed.json()["id"]
+    passed_id = passed.json()["id"]
+
+    assert client.post(
+        f"/api/v1/incidents/{failed_id}/verification",
+        json={"status": "failed", "notes": "Test failure"},
+    ).status_code == 200
+    assert client.post(
+        f"/api/v1/incidents/{passed_id}/verification",
+        json={"status": "passed", "notes": "Test passed"},
+    ).status_code == 200
+
+    response = client.get("/api/v1/incidents?verification_status=failed")
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [failed_id]
+
+
+def test_list_incidents_combines_search_status_and_pagination(client):
+    matching_ids = []
+
+    for index in range(3):
+        created = client.post(
+            "/api/v1/incidents",
+            json={
+                "source": "kubernetes",
+                "logs": f"Combined filter marker {index}",
+            },
+        )
+        assert created.status_code == 201
+        incident_id = created.json()["id"]
+        matching_ids.append(incident_id)
+        assert client.post(
+            f"/api/v1/incidents/{incident_id}/verification",
+            json={"status": "passed", "notes": "Verified"},
+        ).status_code == 200
+
+    unrelated = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "Unrelated marker"},
+    )
+    assert unrelated.status_code == 201
+
+    response = client.get(
+        "/api/v1/incidents"
+        "?search=combined%20filter%20marker"
+        "&verification_status=passed&limit=2&offset=1"
+    )
+    assert response.status_code == 200
+    assert response.json()["limit"] == 2
+    assert response.json()["offset"] == 1
+    assert [item["id"] for item in response.json()["items"]] == (
+        matching_ids[::-1][1:]
+    )
+
+
+def test_list_incidents_rejects_invalid_search_filters(client):
+    invalid_status = client.get(
+        "/api/v1/incidents?verification_status=unknown"
+    )
+    assert invalid_status.status_code == 422
+
+    oversized_search = client.get(
+        "/api/v1/incidents",
+        params={"search": "x" * 201},
+    )
+    assert oversized_search.status_code == 422
+
+
+
+def test_list_incidents_search_treats_like_wildcards_literally(client):
+    literal = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "literal 100%_ready! marker"},
+    )
+    unrelated = client.post(
+        "/api/v1/incidents",
+        json={"source": "docker", "logs": "literal 100XYZready marker"},
+    )
+    assert literal.status_code == 201
+    assert unrelated.status_code == 201
+
+    for term in ("100%", "_ready", "! marker"):
+        response = client.get("/api/v1/incidents", params={"search": term})
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["items"]] == [
+            literal.json()["id"]
+        ]
+
+def test_search_and_status_filter_respect_user_ownership(client):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    from app.services.auth_store import create_session, password_hasher
+    from app.services.database import get_connection
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    created = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "kubernetes",
+            "logs": "Private ownership search marker",
+        },
+    )
+    assert created.status_code == 201
+    incident_id = created.json()["id"]
+
+    assert client.post(
+        f"/api/v1/incidents/{incident_id}/verification",
+        json={"status": "passed", "notes": "Verified"},
+    ).status_code == 200
+
+    with get_connection() as connection:
+        result = connection.execute(
+            text("""
+                INSERT INTO auth_users (username, password_hash, created_at)
+                VALUES (:username, :password_hash, :created_at)
+            """),
+            {
+                "username": "search-filter-user-b",
+                "password_hash": password_hasher.hash(
+                    "search-filter-password-12345"
+                ),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        user_b_id = result.lastrowid
+
+    token_b, _ = create_session(user_b_id)
+
+    with TestClient(app) as client_b:
+        client_b.cookies.set("incident_session", token_b, path="/")
+
+        for query in (
+            "?search=Private%20ownership%20search%20marker",
+            "?verification_status=passed",
+            "?search=Private%20ownership%20search%20marker"
+            "&verification_status=passed",
+        ):
+            response = client_b.get("/api/v1/incidents" + query)
+            assert response.status_code == 200
+            assert all(
+                item["id"] != incident_id
+                for item in response.json()["items"]
+            )
+
+    history_a = client.get(
+        "/api/v1/incidents?search=Private%20ownership%20search%20marker"
+        "&verification_status=passed"
+    )
+    assert history_a.status_code == 200
+    assert [item["id"] for item in history_a.json()["items"]] == [incident_id]

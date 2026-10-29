@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 type Source = 'github-actions' | 'docker' | 'kubernetes'
 type VerificationStatus = 'not_run' | 'passed' | 'failed'
@@ -146,8 +146,15 @@ export default function App() {
   const [verificationNotes, setVerificationNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const historyRequestId = useRef(0)
   const [historyPageLoading, setHistoryPageLoading] = useState(false)
   const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [historySearchInput, setHistorySearchInput] = useState('')
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyStatusInput, setHistoryStatusInput] =
+    useState<VerificationStatus | 'all'>('all')
+  const [historyStatusFilter, setHistoryStatusFilter] =
+    useState<VerificationStatus | 'all'>('all')
   const [openingIncidentId, setOpeningIncidentId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [savingVerification, setSavingVerification] = useState(false)
@@ -161,35 +168,58 @@ export default function App() {
   const [notice, setNotice] = useState('')
 
   const loadHistory = useCallback(
-    async (showLoading = true): Promise<boolean> => {
+    async (
+      showLoading = true,
+      search = historySearch,
+      status: VerificationStatus | 'all' = historyStatusFilter,
+    ): Promise<boolean> => {
+      const requestId = ++historyRequestId.current
+      setHistoryPageLoading(false)
       if (showLoading) setHistoryLoading(true)
       try {
-        const data = await api<unknown>('/api/v1/incidents?limit=50&offset=0')
+        const params = new URLSearchParams({ limit: '50', offset: '0' })
+        if (search.trim()) params.set('search', search.trim())
+        if (status !== 'all') params.set('verification_status', status)
+
+        const data = await api<unknown>(`/api/v1/incidents?${params.toString()}`)
         const items = normalizeIncidents(data)
+        if (requestId !== historyRequestId.current) return false
         setIncidents(items)
         setHistoryHasMore(items.length === 50)
         return true
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not load incident history')
+        if (requestId === historyRequestId.current) {
+          setError(err instanceof Error ? err.message : 'Could not load incident history')
+        }
         return false
       } finally {
-        if (showLoading) setHistoryLoading(false)
+        if (showLoading && requestId === historyRequestId.current) {
+          setHistoryLoading(false)
+        }
       }
     },
-    [],
+    [historySearch, historyStatusFilter],
   )
 
   const loadMoreHistory = useCallback(async () => {
     if (historyPageLoading || historyLoading || !historyHasMore) return
 
+    const requestId = historyRequestId.current
     setHistoryPageLoading(true)
     setError('')
     try {
-      const offset = incidents.length
-      const data = await api<unknown>(
-        `/api/v1/incidents?limit=50&offset=${offset}`,
-      )
+      const params = new URLSearchParams({
+        limit: '50',
+        offset: String(incidents.length),
+      })
+      if (historySearch.trim()) params.set('search', historySearch.trim())
+      if (historyStatusFilter !== 'all') {
+        params.set('verification_status', historyStatusFilter)
+      }
+
+      const data = await api<unknown>(`/api/v1/incidents?${params.toString()}`)
       const items = normalizeIncidents(data)
+      if (requestId !== historyRequestId.current) return
 
       setIncidents((current) => {
         const existingIds = new Set(current.map((incident) => incident.id))
@@ -197,11 +227,22 @@ export default function App() {
       })
       setHistoryHasMore(items.length === 50)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load more incidents')
+      if (requestId === historyRequestId.current) {
+        setError(err instanceof Error ? err.message : 'Could not load more incidents')
+      }
     } finally {
-      setHistoryPageLoading(false)
+      if (requestId === historyRequestId.current) {
+        setHistoryPageLoading(false)
+      }
     }
-  }, [historyHasMore, historyLoading, historyPageLoading, incidents.length])
+  }, [
+    historyHasMore,
+    historyLoading,
+    historyPageLoading,
+    historySearch,
+    historyStatusFilter,
+    incidents.length,
+  ])
 
   const checkHealth = useCallback(async () => {
     try {
@@ -723,11 +764,93 @@ export default function App() {
                 <h3 className="font-semibold">Incident memory</h3>
                 <p className="mt-1 text-xs text-slate-400">Recent incidents saved in SQLite.</p>
               </div>
+              <form
+                className="mb-4 space-y-3"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const search = historySearchInput.trim()
+                  setHistorySearch(search)
+                  setHistoryStatusFilter(historyStatusInput)
+                  setError('')
+                  void loadHistory(true, search, historyStatusInput)
+                }}
+              >
+                <div>
+                  <label
+                    className="mb-1 block text-sm text-slate-300"
+                    htmlFor="history-search"
+                  >
+                    Search source or logs
+                  </label>
+                  <input
+                    id="history-search"
+                    type="search"
+                    maxLength={200}
+                    className={field}
+                    placeholder="e.g. OOMKilled, kubernetes…"
+                    value={historySearchInput}
+                    onChange={(event) => setHistorySearchInput(event.target.value)}
+                  />
+                </div>
+                <div>
+                  <label
+                    className="mb-1 block text-sm text-slate-300"
+                    htmlFor="history-status-filter"
+                  >
+                    Verification status
+                  </label>
+                  <select
+                    id="history-status-filter"
+                    className={field}
+                    value={historyStatusInput}
+                    onChange={(event) =>
+                      setHistoryStatusInput(event.target.value as VerificationStatus | 'all')
+                    }
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="not_run">Not run</option>
+                    <option value="passed">Passed</option>
+                    <option value="failed">Failed</option>
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    className={`${primary} flex-1`}
+                    disabled={historyPageLoading}
+                  >
+                    Search
+                  </button>
+                  <button
+                    type="button"
+                    className={`${secondary} flex-1`}
+                    disabled={historyLoading || historyPageLoading}
+                    onClick={() => {
+                      setHistorySearchInput('')
+                      setHistorySearch('')
+                      setHistoryStatusInput('all')
+                      setHistoryStatusFilter('all')
+                      setError('')
+                      void loadHistory(true, '', 'all')
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              </form>
               {historyLoading && <p className="text-sm text-slate-400">Loading history…</p>}
               {!historyLoading && incidents.length === 0 && (
                 <div className="rounded-lg border border-dashed border-slate-700 px-4 py-8 text-center">
-                  <p className="text-sm text-slate-300">No saved incidents yet</p>
-                  <p className="mt-1 text-xs text-slate-500">Analyze and save logs to build incident history.</p>
+                  <p className="text-sm text-slate-300">
+                    {historySearch || historyStatusFilter !== 'all'
+                      ? 'No incidents match these filters'
+                      : 'No saved incidents yet'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {historySearch || historyStatusFilter !== 'all'
+                      ? 'Try a different search or clear the filters.'
+                      : 'Analyze and save logs to build incident history.'}
+                  </p>
                 </div>
               )}
               <div className="max-h-[440px] space-y-2 overflow-y-auto">

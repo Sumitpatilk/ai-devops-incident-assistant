@@ -69,17 +69,45 @@ def list_incidents(
     user_id: int,
     limit: int = 20,
     offset: int = 0,
+    search: str | None = None,
+    verification_status: str | None = None,
 ) -> list[dict]:
     init_db()
+
+    conditions = ["user_id = :user_id"]
+    parameters = {
+        "user_id": user_id,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    if search and search.strip():
+        conditions.append(
+            "(LOWER(source) LIKE :search ESCAPE '!' "
+            "OR LOWER(logs) LIKE :search ESCAPE '!')"
+        )
+        escaped_search = (
+            search.strip().lower()
+            .replace("!", "!!")
+            .replace("%", "!%")
+            .replace("_", "!_")
+        )
+        parameters["search"] = f"%{escaped_search}%"
+
+    if verification_status:
+        conditions.append("verification_status = :verification_status")
+        parameters["verification_status"] = verification_status
+
+    where_clause = " AND ".join(conditions)
     with get_connection() as connection:
         rows = connection.execute(
-            text("""
+            text(f"""
                 SELECT * FROM incidents
-                WHERE user_id = :user_id
+                WHERE {where_clause}
                 ORDER BY id DESC
                 LIMIT :limit OFFSET :offset
             """),
-            {"user_id": user_id, "limit": limit, "offset": offset},
+            parameters,
         ).mappings().all()
 
     return [_row_to_dict(row) for row in rows]

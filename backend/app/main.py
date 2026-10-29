@@ -253,10 +253,20 @@ def create_incident(
 def get_incidents(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, max_length=200),
+    verification_status: Literal["not_run", "passed", "failed"] | None = Query(
+        default=None,
+    ),
     user_id: int = Depends(require_user_id),
 ):
     return {
-        "items": list_incidents(user_id=user_id, limit=limit, offset=offset),
+        "items": list_incidents(
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            search=search,
+            verification_status=verification_status,
+        ),
         "limit": limit,
         "offset": offset,
     }
