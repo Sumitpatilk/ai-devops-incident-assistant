@@ -65,7 +65,6 @@ def test_login_rejects_invalid_password(unauthenticated_client):
     assert response.status_code == 401
     assert "incident_session" not in response.cookies
 
-
 def test_login_and_current_session(unauthenticated_client):
     create_user(TEST_USERNAME, TEST_PASSWORD)
 
@@ -115,7 +114,6 @@ def test_login_rejects_invalid_origin(unauthenticated_client):
     assert response.status_code == 403
     assert "incident_session" not in response.cookies
 
-
 def test_login_cookie_security_attributes(unauthenticated_client):
     create_user(TEST_USERNAME, TEST_PASSWORD)
 
@@ -153,7 +151,6 @@ def test_login_cookie_secure_when_https_mode_enabled(
     cookie = response.headers["set-cookie"].lower()
     assert "secure" in [part.strip() for part in cookie.split(";")]
 
-
 def test_expired_session_is_rejected(unauthenticated_client, monkeypatch):
     import hashlib
     from sqlalchemy import text
@@ -190,7 +187,6 @@ def test_expired_session_is_rejected(unauthenticated_client, monkeypatch):
     session_response = unauthenticated_client.get("/api/v1/auth/me")
     assert session_response.status_code == 401
 
-
 def test_login_rate_limit_blocks_repeated_failures(unauthenticated_client):
     for _ in range(5):
         response = unauthenticated_client.post(
@@ -211,3 +207,20 @@ def test_login_rate_limit_blocks_repeated_failures(unauthenticated_client):
     )
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "900"
+
+
+def test_analyze_redacts_secrets_but_preserves_evidence(client):
+    secret = "hunter2"
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "source": "kubernetes",
+            "logs": f"Container terminated: OOMKilled password={secret}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert secret not in body
+    assert "[REDACTED]" in body
+    assert "OOMKilled" in body

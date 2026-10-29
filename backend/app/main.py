@@ -23,6 +23,7 @@ from app.services.auth_store import (
     get_session_user_id,
 )
 from app.services.log_analyzer import analyze_log
+from app.services.secret_redaction import redact_secrets
 from app.services.incident_store import (
     get_incident,
     list_incidents,
@@ -215,17 +216,19 @@ def logout(
     )
     return {"authenticated": False}
 
-
 @app.post("/api/v1/analyze")
 def analyze(
     payload: AnalyzeRequest,
     _username: str = Depends(require_user),
 ):
     try:
-        return analyze_log(source=payload.source, log_text=payload.logs)
+        sanitized_logs = redact_secrets(payload.logs)
+        return analyze_log(
+            source=payload.source,
+            log_text=sanitized_logs,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
 
 @app.post("/api/v1/incidents", status_code=201)
 def create_incident(
@@ -233,21 +236,21 @@ def create_incident(
     user_id: int = Depends(require_user_id),
 ):
     try:
+        sanitized_logs = redact_secrets(payload.logs)
         analysis = analyze_log(
             source=payload.source,
-            log_text=payload.logs,
+            log_text=sanitized_logs,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return save_incident(
         source=payload.source.strip().lower(),
-        logs=payload.logs,
+        logs=sanitized_logs,
         analysis=analysis,
         user_id=user_id,
         fix_description=payload.fix_description,
     )
-
 
 @app.get("/api/v1/incidents")
 def get_incidents(

@@ -470,3 +470,28 @@ def test_search_and_status_filter_respect_user_ownership(client):
     )
     assert history_a.status_code == 200
     assert [item["id"] for item in history_a.json()["items"]] == [incident_id]
+
+
+def test_incident_storage_redacts_logs_and_evidence(client):
+    secret = "incident-secret-987"
+    response = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "kubernetes",
+            "logs": (
+                "Container terminated: OOMKilled "
+                f"password={secret}"
+            ),
+        },
+    )
+
+    assert response.status_code == 201
+    incident = response.json()
+
+    assert secret not in incident["logs"]
+    assert "[REDACTED]" in incident["logs"]
+
+    evidence = incident["analysis"]["findings"][0]["evidence"]
+    assert secret not in str(evidence)
+    assert "[REDACTED]" in str(evidence)
+    assert "OOMKilled" in str(evidence)
