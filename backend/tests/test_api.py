@@ -211,6 +211,78 @@ def test_login_rate_limit_blocks_repeated_failures(unauthenticated_client):
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "900"
 
+def test_successful_login_clears_previous_failures(unauthenticated_client):
+    create_user(TEST_USERNAME, TEST_PASSWORD)
+
+    for _ in range(4):
+        response = unauthenticated_client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": TEST_USERNAME,
+                "password": "incorrect-password",
+            },
+        )
+        assert response.status_code == 401
+
+    success = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": TEST_PASSWORD,
+        },
+    )
+
+    assert success.status_code == 200
+    assert not main_module._login_failures
+
+    for _ in range(5):
+        response = unauthenticated_client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": TEST_USERNAME,
+                "password": "incorrect-password",
+            },
+        )
+        assert response.status_code == 401
+
+    blocked = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": "incorrect-password",
+        },
+    )
+    assert blocked.status_code == 429
+
+
+def test_login_rate_limit_allows_attempt_after_window_expires(
+    unauthenticated_client, monkeypatch
+):
+    create_user(TEST_USERNAME, TEST_PASSWORD)
+    clock = [1000.0]
+    monkeypatch.setattr(main_module, "monotonic", lambda: clock[0])
+
+    first = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": "incorrect-password",
+        },
+    )
+    assert first.status_code == 401
+
+    clock[0] += main_module.LOGIN_WINDOW_SECONDS
+
+    after_expiry = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": "incorrect-password",
+        },
+    )
+    assert after_expiry.status_code == 401
+
+
 def test_login_rate_limit_removes_expired_ip_entries(
     unauthenticated_client, monkeypatch
 ):
