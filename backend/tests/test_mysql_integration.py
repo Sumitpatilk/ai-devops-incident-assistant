@@ -11,6 +11,7 @@ from app.services.auth_store import (
     create_user,
     delete_session,
     get_session_user,
+    password_hasher,
 )
 from app.services.database import (
     get_connection,
@@ -72,13 +73,43 @@ def test_mysql_incident_and_authentication_flow():
             text("DELETE FROM incidents")
         )
 
+    username_input = " MySQL-CI-User "
     username = "mysql-ci-user"
     password = "mysql-ci-password-12345"
-    create_user(username, password)
+    create_user(username_input, password)
 
-    user_id = authenticate_user(username, password)
+    user_id = authenticate_user(" MYSQL-CI-USER ", password)
     assert user_id is not None
     assert authenticate_user(username, "wrong-password") is None
+
+    with get_connection() as connection:
+        stored_username = connection.execute(
+            text("SELECT username FROM auth_users WHERE id = :user_id"),
+            {"user_id": user_id},
+        ).scalar_one()
+
+    assert stored_username == username
+
+    # Simulate a legacy account created before lowercase normalization.
+    legacy_password = "mysql-legacy-password-12345"
+    with get_connection() as connection:
+        connection.execute(
+            text("""
+                INSERT INTO auth_users (username, password_hash, created_at)
+                VALUES (:username, :password_hash, :created_at)
+            """),
+            {
+                "username": "Legacy-MySQL-User",
+                "password_hash": password_hasher.hash(legacy_password),
+                "created_at": "2026-10-30T00:00:00+00:00",
+            },
+        )
+
+    legacy_user_id = authenticate_user(
+        " legacy-mysql-user ",
+        legacy_password,
+    )
+    assert legacy_user_id is not None
 
     incident = save_incident(
         source="ci-mysql-test",

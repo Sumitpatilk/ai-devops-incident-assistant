@@ -17,7 +17,7 @@ def init_auth_db():
 
 
 def create_user(username: str, password: str) -> None:
-    username = username.strip()
+    username = username.strip().lower()
 
     if not 3 <= len(username) <= 64:
         raise ValueError("Username must be between 3 and 64 characters.")
@@ -56,20 +56,23 @@ def create_user(username: str, password: str) -> None:
 
 
 def authenticate_user(username: str, password: str) -> int | None:
+    normalized_username = username.strip().lower()
     init_auth_db()
 
     with get_connection() as connection:
-        row = connection.execute(
+        rows = connection.execute(
             text("""
                 SELECT id, password_hash
                 FROM auth_users
-                WHERE username = :username
+                WHERE LOWER(username) = :username
             """),
-            {"username": username.strip()},
-        ).mappings().first()
+            {"username": normalized_username},
+        ).mappings().all()
 
-    if row is None:
+    if len(rows) != 1:
         return None
+
+    row = rows[0]
 
     try:
         if not password_hasher.verify(row["password_hash"], password):
