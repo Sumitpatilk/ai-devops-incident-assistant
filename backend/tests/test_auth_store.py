@@ -87,9 +87,33 @@ def test_authentication_rejects_unknown_username():
         "ab",
         "invalid username",
         "invalid@username",
+        "समित123",
+        "用户123",
+        "user१२३",
+        "user😊",
         "",
     ],
 )
 def test_create_user_rejects_invalid_username(username):
     with pytest.raises(ValueError):
         create_user(username, TEST_PASSWORD)
+
+
+@pytest.mark.parametrize(
+    "username",
+    [
+        "ops_pilot",
+        "ops-pilot",
+        "user123",
+        "ABC-123_XYZ",
+    ],
+)
+def test_create_user_accepts_ascii_username_characters(username):
+    create_user(username, TEST_PASSWORD)
+
+    with get_connection() as connection:
+        row = connection.execute(
+            text("SELECT username FROM auth_users")
+        ).first()
+
+    assert row[0] == username.strip().lower()

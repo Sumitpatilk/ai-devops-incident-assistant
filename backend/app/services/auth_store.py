@@ -22,9 +22,12 @@ def create_user(username: str, password: str) -> None:
     if not 3 <= len(username) <= 64:
         raise ValueError("Username must be between 3 and 64 characters.")
 
-    if not username.replace("_", "").replace("-", "").isalnum():
+    if not all(
+        character in "abcdefghijklmnopqrstuvwxyz0123456789_-"
+        for character in username
+    ):
         raise ValueError(
-            "Username may contain letters, numbers, underscores, and hyphens."
+            "Username may contain ASCII letters, numbers, underscores, and hyphens."
         )
 
     if len(password) < 12:
