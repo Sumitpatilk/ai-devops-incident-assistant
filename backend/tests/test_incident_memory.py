@@ -495,3 +495,52 @@ def test_incident_storage_redacts_logs_and_evidence(client):
     assert secret not in str(evidence)
     assert "[REDACTED]" in str(evidence)
     assert "OOMKilled" in str(evidence)
+
+
+def test_incident_text_fields_redact_secrets(client):
+    create_secret = "create-secret-123"
+    update_secret = "update-secret-456"
+    notes_secret = "notes-secret-789"
+
+    created = client.post(
+        "/api/v1/incidents",
+        json={
+            "source": "kubernetes",
+            "logs": "Container terminated: OOMKilled",
+            "fix_description": (
+                f"Updated deployment password={create_secret}"
+            ),
+        },
+    )
+
+    assert created.status_code == 201
+    incident = created.json()
+    incident_id = incident["id"]
+
+    assert create_secret not in incident["fix_description"]
+    assert "[REDACTED]" in incident["fix_description"]
+
+    updated = client.put(
+        f"/api/v1/incidents/{incident_id}/fix",
+        json={
+            "fix_description": (
+                f"Applied remediation token={update_secret}"
+            ),
+        },
+    )
+
+    assert updated.status_code == 200
+    assert update_secret not in updated.json()["fix_description"]
+    assert "[REDACTED]" in updated.json()["fix_description"]
+
+    verification = client.post(
+        f"/api/v1/incidents/{incident_id}/verification",
+        json={
+            "status": "passed",
+            "notes": f"Tests completed api_key={notes_secret}",
+        },
+    )
+
+    assert verification.status_code == 200
+    assert notes_secret not in verification.json()["verification_notes"]
+    assert "[REDACTED]" in verification.json()["verification_notes"]

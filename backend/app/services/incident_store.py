@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.services.database import get_connection, init_db
+from app.services.secret_redaction import redact_secrets
 
 
 def save_incident(
@@ -13,6 +14,8 @@ def save_incident(
     user_id: int,
     fix_description: str | None = None,
 ) -> dict:
+    if fix_description is not None:
+        fix_description = redact_secrets(fix_description)
     init_db()
     created_at = datetime.now(timezone.utc).isoformat()
 
@@ -118,6 +121,8 @@ def update_fix_description(
     user_id: int,
     fix_description: str | None,
 ) -> dict | None:
+    if fix_description is not None:
+        fix_description = redact_secrets(fix_description)
     init_db()
     with get_connection() as connection:
         result = connection.execute(
@@ -145,6 +150,7 @@ def update_verification(
     notes: str = "",
 ) -> dict | None:
     init_db()
+    notes = redact_secrets(notes)
     verified_at = (
         datetime.now(timezone.utc).isoformat()
         if status in {"passed", "failed"}
