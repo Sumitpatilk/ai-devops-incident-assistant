@@ -97,16 +97,30 @@ def _login_client_key(request: Request) -> str:
 def check_login_rate_limit(request: Request) -> str:
     key = _login_client_key(request)
     now = monotonic()
+
     with _login_failures_lock:
+        # Remove expired attempts and stale IP entries.
+        expired_keys = []
+
+        for client_key, attempts in _login_failures.items():
+            while attempts and now - attempts[0] >= LOGIN_WINDOW_SECONDS:
+                attempts.popleft()
+
+            if not attempts:
+                expired_keys.append(client_key)
+
+        for expired_key in expired_keys:
+            _login_failures.pop(expired_key, None)
+
         attempts = _login_failures.setdefault(key, deque())
-        while attempts and now - attempts[0] >= LOGIN_WINDOW_SECONDS:
-            attempts.popleft()
+
         if len(attempts) >= LOGIN_MAX_FAILURES:
             raise HTTPException(
                 status_code=429,
                 detail="Too many failed login attempts. Try again in 15 minutes.",
                 headers={"Retry-After": str(LOGIN_WINDOW_SECONDS)},
             )
+
     return key
 
 

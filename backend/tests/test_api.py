@@ -1,3 +1,6 @@
+from collections import deque
+
+from app import main as main_module
 from app.services.auth_store import create_user
 
 TEST_USERNAME = "test-user"
@@ -208,6 +211,25 @@ def test_login_rate_limit_blocks_repeated_failures(unauthenticated_client):
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "900"
 
+def test_login_rate_limit_removes_expired_ip_entries(
+    unauthenticated_client, monkeypatch
+):
+    main_module._login_failures["expired-ip"] = deque([0.0])
+    main_module._login_failures["active-ip"] = deque([950.0])
+
+    monkeypatch.setattr(main_module, "monotonic", lambda: 1000.0)
+
+    response = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": "incorrect-password",
+        },
+    )
+
+    assert response.status_code == 401
+    assert "expired-ip" not in main_module._login_failures
+    assert list(main_module._login_failures["active-ip"]) == [950.0]
 
 def test_analyze_redacts_secrets_but_preserves_evidence(client):
     secret = "hunter2"
